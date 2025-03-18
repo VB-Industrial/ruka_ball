@@ -59,6 +59,15 @@ static float j_pos[6] = {0.0};
 static float j_vel[6] = {0.0};
 static float j_eff[6] = {0.0};
 
+static int ball_x = 0;
+static int ball_y = 0;
+
+static float plat_x = 0.0;
+static float plat_y = 0.0;
+
+static float prev_x = 0.0;
+static float prev_y = 0.0;
+
 static int controller_flag = 0;
 
 
@@ -95,42 +104,71 @@ void send_JS(CanardNodeID node_id, float pos, float vel, float eff) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-void string_cb(const geometry_msgs::msg::Point &p)
+void cv_cb(const geometry_msgs::msg::Point &p)
 {
-  std::cout<<"x: "<< p.x<<"  y: "<< p.y<<std::endl;
-  std::cout<<"j1_pos: "<< j_pos[0]<<std::endl;
+  ball_y = p.x;
+  ball_x = p.y;
+  plat_x = j_pos[5];
+  plat_y = j_pos[4];
   controller_flag = 1;
 };
 
-void controller()
+void controller(int x, int y, float plat_x, float plat_y)
 {
-  std::cout<<"Controller called"<<std::endl;
+//max X = 600, min X = 0
+//max Y = 600, min Y = 0
+// Левая тройка векторов х - перпендикулярен руке, y - вдоль руки
+// X - управляется 5м джоинтом, поворот 5-го джоинта положительный по правилу правой руки если Z ориентировать налево смотря на руку
+// Y - управляется 4м джоинтом, поворот 6-го джоинта положительный по правилу правой руки если Z ориентировать наружу смотря на руку
+
+
+  float Kpx = 0.0003;
+  float Kpy = 0.0003;
+  float Kdx = 0.0003;
+  float Kdy = 0.0003;
+
+  int X_zero = 10;
+  int Y_zero = 80;
+  int X_lim = 450;
+  int Y_lim = 540;
+  int X_center = 300;
+  int Y_center = 700;
+
+  float V_x = x - prev_x;
+  float V_y = y - prev_y;
+
+  std::cout<<"x: "<<x<<"  y: "<<y<<std::endl;
+  std::cout<<"V_x: "<<V_x<<"  V_y: "<<V_y<<std::endl;
+  
+  float U_x = -(Kpx*(x - X_center) + Kdx*V_x);
+  float U_y = Kpy*(y - Y_center) - Kdy*V_y;
+
+  //Робастные ограничения
+  if (U_x > 0.5)
+  {
+    U_x = 0.5;
+  }
+  else if(U_x < -0.5)
+  {
+    U_x = -0.5;
+  }
+
+  if (U_y > 0.5)
+  {
+    U_y = 0.5;
+  }
+  else if(U_y < -0.5)
+  {
+    U_y = -0.5;
+  }
+  // off
+
+
+  std::cout<<"plat_x: "<< U_x<<"  plat_y: "<< U_y<<std::endl;
+  send_JS(4, U_x, 0.0, 0.0);
+  send_JS(5, U_y, 0.0, 0.0);
+  prev_x = x;
+  prev_y = y;
 }
 
 int main(int argc, char ** argv)
@@ -141,7 +179,7 @@ int main(int argc, char ** argv)
   rclcpp::init(argc, argv);
 
   auto node = std::make_shared<rclcpp::Node>("my_node");
-  auto sub = node->create_subscription<geometry_msgs::msg::Point>("/ball_center", 10, string_cb);
+  auto sub = node->create_subscription<geometry_msgs::msg::Point>("/ball_center", 10, cv_cb);
 
   cy_interface = CyphalInterface::create_heap<LinuxCAN, O1Allocator>(100, "can0", 1000, utilities); //Node ID, transport, queue_len, utilities
   JS_reader_01 = new JSReader_01(cy_interface);
@@ -152,12 +190,11 @@ int main(int argc, char ** argv)
 
   while(rclcpp::ok())
   {
-    
     rclcpp::spin_some(node);
     cy_interface->loop();
     if(controller_flag)
     {
-      controller();
+      controller(ball_x, ball_y, plat_x, plat_y);
       controller_flag = 0;
     }
 
@@ -167,4 +204,3 @@ int main(int argc, char ** argv)
 
   return 0;
 }
-
