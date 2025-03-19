@@ -1,15 +1,19 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <list>
 #include <iostream>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <iomanip> 
+#include <numeric>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "geometry_msgs/msg/point.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 
 #include "ruka_joints.h"
 
@@ -68,6 +72,13 @@ static float plat_y = 0.0;
 static float prev_x = 0.0;
 static float prev_y = 0.0;
 
+static float V_ball_x = 0.0;
+static float V_ball_y = 0.0;
+
+static std::list<int> arr_of_div_x;
+static std::list<int> arr_of_div_y;
+
+
 static int controller_flag = 0;
 
 
@@ -122,26 +133,45 @@ void controller(int x, int y, float plat_x, float plat_y)
 // Y - управляется 4м джоинтом, поворот 6-го джоинта положительный по правилу правой руки если Z ориентировать наружу смотря на руку
 
 
-  float Kpx = 0.0003;
-  float Kpy = 0.0003;
-  float Kdx = 0.0003;
-  float Kdy = 0.0003;
+  float Kp = 0.0002;
+  float Kd = 0.1;
+  float Ki_x = 0.000002;
+  float Ki_y = 0.000002;
+  int Ti = 20;
 
   int X_zero = 10;
   int Y_zero = 80;
   int X_lim = 450;
   int Y_lim = 540;
-  int X_center = 300;
-  int Y_center = 700;
+  int X_center = 250;
+  int Y_center = 450;
 
-  float V_x = x - prev_x;
-  float V_y = y - prev_y;
+  V_ball_x = x - prev_x;
+  V_ball_y = y - prev_y;
 
   std::cout<<"x: "<<x<<"  y: "<<y<<std::endl;
-  std::cout<<"V_x: "<<V_x<<"  V_y: "<<V_y<<std::endl;
+  std::cout<<"V_x: "<<V_ball_x<<"  V_y: "<<V_ball_y<<std::endl;
   
-  float U_x = -(Kpx*(x - X_center) + Kdx*V_x);
-  float U_y = Kpy*(y - Y_center) - Kdy*V_y;
+  arr_of_div_x.push_back(x - X_center);
+  if (arr_of_div_x.size() > Ti)
+  {
+    arr_of_div_x.pop_front();
+  }
+
+  arr_of_div_y.push_back(y - Y_center);
+  if (arr_of_div_y.size() > Ti)
+  {
+    arr_of_div_y.pop_front();
+  } 
+
+  int I_of_div_x = 0;
+  int I_of_div_y = 0;
+
+  I_of_div_x = std::accumulate(arr_of_div_x.begin(), arr_of_div_x.end(),0);
+  I_of_div_y = std::accumulate(arr_of_div_y.begin(), arr_of_div_y.end(),0);
+  std::cout<<"I_of_div_x: "<<I_of_div_x<<"  I_of_div_y: "<<I_of_div_y<<std::endl;
+  float U_x = -(Kp*(x - X_center) + Kd*V_ball_x + I_of_div_x*Ki_x); //тут "-" т.к. направление угловой скорости мотора - отрицательное по оси Y платформы
+  float U_y = Kp*(y - Y_center) + Kd*V_ball_y + I_of_div_y*Ki_y;
 
   //Робастные ограничения
   if (U_x > 0.5)
@@ -164,12 +194,13 @@ void controller(int x, int y, float plat_x, float plat_y)
   // off
 
 
-  std::cout<<"plat_x: "<< U_x<<"  plat_y: "<< U_y<<std::endl;
+  std::cout<<"U_x: "<< U_x<<"  U_y: "<< U_y<<std::endl;
   send_JS(4, U_x, 0.0, 0.0);
   send_JS(5, U_y, 0.0, 0.0);
   prev_x = x;
   prev_y = y;
 }
+
 
 int main(int argc, char ** argv)
 {
@@ -180,6 +211,13 @@ int main(int argc, char ** argv)
 
   auto node = std::make_shared<rclcpp::Node>("my_node");
   auto sub = node->create_subscription<geometry_msgs::msg::Point>("/ball_center", 10, cv_cb);
+  auto twist_pub = node->create_publisher<geometry_msgs::msg::Twist>("/ball_twist", 10);
+  auto js_pub = node->create_publisher<sensor_msgs::msg::JointState>("/joint_state", 10);
+
+  geometry_msgs::msg::Twist ball_twist;
+  sensor_msgs::msg::JointState js;
+
+
 
   cy_interface = CyphalInterface::create_heap<LinuxCAN, O1Allocator>(100, "can0", 1000, utilities); //Node ID, transport, queue_len, utilities
   JS_reader_01 = new JSReader_01(cy_interface);
@@ -196,6 +234,17 @@ int main(int argc, char ** argv)
     {
       controller(ball_x, ball_y, plat_x, plat_y);
       controller_flag = 0;
+
+      js.name = {"4","5"};
+      js.position = {j_pos[3], j_pos[4]};
+      js.velocity = {0.0,0.0};
+      js.effort = {0.0,0.0};
+
+      ball_twist.linear.x = V_ball_x;
+      ball_twist.linear.y = V_ball_y;
+
+      twist_pub->publish(ball_twist);
+      js_pub->publish(js);
     }
 
   }
